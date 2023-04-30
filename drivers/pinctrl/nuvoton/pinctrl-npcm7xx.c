@@ -11,14 +11,17 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/pinctrl/machine.h>
-#include <linux/pinctrl/pinconf.h>
-#include <linux/pinctrl/pinconf-generic.h>
-#include <linux/pinctrl/pinctrl.h>
-#include <linux/pinctrl/pinmux.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
+#include <linux/seq_file.h>
+
+#include <linux/pinctrl/consumer.h>
+#include <linux/pinctrl/machine.h>
+#include <linux/pinctrl/pinconf-generic.h>
+#include <linux/pinctrl/pinconf.h>
+#include <linux/pinctrl/pinctrl.h>
+#include <linux/pinctrl/pinmux.h>
 
 /* GCR registers */
 #define NPCM7XX_GCR_PDID	0x00
@@ -81,11 +84,11 @@ struct npcm7xx_gpio {
 	int			irq;
 	struct irq_chip		irq_chip;
 	u32			pinctrl_id;
-	int (*direction_input)(struct gpio_chip *chip, unsigned offset);
-	int (*direction_output)(struct gpio_chip *chip, unsigned offset,
+	int (*direction_input)(struct gpio_chip *chip, unsigned int offset);
+	int (*direction_output)(struct gpio_chip *chip, unsigned int offset,
 				int value);
-	int (*request)(struct gpio_chip *chip, unsigned offset);
-	void (*free)(struct gpio_chip *chip, unsigned offset);
+	int (*request)(struct gpio_chip *chip, unsigned int offset);
+	void (*free)(struct gpio_chip *chip, unsigned int offset);
 };
 
 struct npcm7xx_pinctrl {
@@ -2043,7 +2046,6 @@ static int __init npcm7xx_pinctrl_register(void)
 }
 arch_initcall(npcm7xx_pinctrl_register);
 
-MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("jordan_hargrave@dell.com");
 MODULE_AUTHOR("tomer.maimon@nuvoton.com");
 MODULE_DESCRIPTION("Nuvoton NPCM7XX Pinctrl and GPIO driver");

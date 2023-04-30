@@ -42,70 +42,56 @@ static int fill_silence_frames(struct snd_pcm_substream *substream,
  *
  * when runtime->silence_size >= runtime->boundary - fill processed area with silence immediately
  */
-void snd_pcm_playback_silence(struct snd_pcm_substream *substream, snd_pcm_uframes_t new_hw_ptr)
+void snd_pcm_playback_silence(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	snd_pcm_uframes_t frames, ofs, transfer;
+	snd_pcm_uframes_t appl_ptr = READ_ONCE(runtime->control->appl_ptr);
+	snd_pcm_sframes_t added, hw_avail, frames;
+	snd_pcm_uframes_t noise_dist, ofs, transfer;
 	int err;
 
+	added = appl_ptr - runtime->silence_start;
+	if (added) {
+		if (added < 0)
+			added += runtime->boundary;
+		if (added < runtime->silence_filled)
+			runtime->silence_filled -= added;
+		else
+			runtime->silence_filled = 0;
+		runtime->silence_start = appl_ptr;
+	}
+
+	// This will "legitimately" turn negative on underrun, and will be mangled
+	// into a huge number by the boundary crossing handling. The initial state
+	// might also be not quite sane. The code below MUST account for these cases.
+	hw_avail = appl_ptr - runtime->status->hw_ptr;
+	if (hw_avail < 0)
+		hw_avail += runtime->boundary;
+
+	noise_dist = hw_avail + runtime->silence_filled;
 	if (runtime->silence_size < runtime->boundary) {
-		snd_pcm_sframes_t noise_dist, n;
-		snd_pcm_uframes_t appl_ptr = READ_ONCE(runtime->control->appl_ptr);
-		if (runtime->silence_start != appl_ptr) {
-			n = appl_ptr - runtime->silence_start;
-			if (n < 0)
-				n += runtime->boundary;
-			if ((snd_pcm_uframes_t)n < runtime->silence_filled)
-				runtime->silence_filled -= n;
-			else
-				runtime->silence_filled = 0;
-			runtime->silence_start = appl_ptr;
-		}
-		if (runtime->silence_filled >= runtime->buffer_size)
-			return;
-		noise_dist = snd_pcm_playback_hw_avail(runtime) + runtime->silence_filled;
-		if (noise_dist >= (snd_pcm_sframes_t) runtime->silence_threshold)
-			return;
 		frames = runtime->silence_threshold - noise_dist;
+		if (frames <= 0)
+			return;
 		if (frames > runtime->silence_size)
 			frames = runtime->silence_size;
 	} else {
-		if (new_hw_ptr == ULONG_MAX) {	/* initialization */
-			snd_pcm_sframes_t avail = snd_pcm_playback_hw_avail(runtime);
-			if (avail > runtime->buffer_size)
-				avail = runtime->buffer_size;
-			runtime->silence_filled = avail > 0 ? avail : 0;
-			runtime->silence_start = (runtime->status->hw_ptr +
-						  runtime->silence_filled) %
-						 runtime->boundary;
-		} else {
-			ofs = runtime->status->hw_ptr;
-			frames = new_hw_ptr - ofs;
-			if ((snd_pcm_sframes_t)frames < 0)
-				frames += runtime->boundary;
-			runtime->silence_filled -= frames;
-			if ((snd_pcm_sframes_t)runtime->silence_filled < 0) {
-				runtime->silence_filled = 0;
-				runtime->silence_start = new_hw_ptr;
-			} else {
-				runtime->silence_start = ofs;
-			}
-		}
-		frames = runtime->buffer_size - runtime->silence_filled;
+		frames = runtime->buffer_size - noise_dist;
+		if (frames <= 0)
+			return;
 	}
+
 	if (snd_BUG_ON(frames > runtime->buffer_size))
 		return;
-	if (frames == 0)
-		return;
-	ofs = runtime->silence_start % runtime->buffer_size;
-	while (frames > 0) {
+	ofs = (runtime->silence_start + runtime->silence_filled) % runtime->buffer_size;
+	do {
 		transfer = ofs + frames > runtime->buffer_size ? runtime->buffer_size - ofs : frames;
 		err = fill_silence_frames(substream, ofs, transfer);
 		snd_BUG_ON(err < 0);
 		runtime->silence_filled += transfer;
 		frames -= transfer;
 		ofs = 0;
-	}
+	} while (frames > 0);
 	snd_pcm_dma_buffer_sync(substream, SNDRV_DMA_SYNC_DEVICE);
 }
 
@@ -186,7 +172,7 @@ int snd_pcm_update_state(struct snd_pcm_substream *substream,
 	avail = snd_pcm_avail(substream);
 	if (avail > runtime->avail_max)
 		runtime->avail_max = avail;
-	if (runtime->status->state == SNDRV_PCM_STATE_DRAINING) {
+	if (runtime->state == SNDRV_PCM_STATE_DRAINING) {
 		if (avail >= runtime->buffer_size) {
 			snd_pcm_drain_done(substream);
 			return -EPIPE;
@@ -439,10 +425,6 @@ static int snd_pcm_update_hw_ptr0(struct snd_pcm_substream *substream,
 		return 0;
 	}
 
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK &&
-	    runtime->silence_size > 0)
-		snd_pcm_playback_silence(substream, new_hw_ptr);
-
 	if (in_interrupt) {
 		delta = new_hw_ptr - runtime->hw_ptr_interrupt;
 		if (delta < 0)
@@ -459,6 +441,10 @@ static int snd_pcm_update_hw_ptr0(struct snd_pcm_substream *substream,
 		snd_BUG_ON(crossed_boundary != 1);
 		runtime->hw_ptr_wrap += runtime->boundary;
 	}
+
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK &&
+	    runtime->silence_size > 0)
+		snd_pcm_playback_silence(substream);
 
 	update_audio_tstamp(substream, &curr_tstamp, &audio_tstamp);
 
@@ -1878,15 +1864,14 @@ static int wait_for_avail(struct snd_pcm_substream *substream,
 		if (substream->wait_time) {
 			wait_time = substream->wait_time;
 		} else {
-			wait_time = 10;
+			wait_time = 100;
 
 			if (runtime->rate) {
-				long t = runtime->period_size * 2 /
-					 runtime->rate;
+				long t = runtime->buffer_size * 1100 / runtime->rate;
 				wait_time = max(t, wait_time);
 			}
-			wait_time = msecs_to_jiffies(wait_time * 1000);
 		}
+		wait_time = msecs_to_jiffies(wait_time);
 	}
 
 	for (;;) {
@@ -1911,7 +1896,7 @@ static int wait_for_avail(struct snd_pcm_substream *substream,
 
 		snd_pcm_stream_lock_irq(substream);
 		set_current_state(TASK_INTERRUPTIBLE);
-		switch (runtime->status->state) {
+		switch (runtime->state) {
 		case SNDRV_PCM_STATE_SUSPENDED:
 			err = -ESTRPIPE;
 			goto _endloop;
@@ -1934,8 +1919,8 @@ static int wait_for_avail(struct snd_pcm_substream *substream,
 		}
 		if (!tout) {
 			pcm_dbg(substream->pcm,
-				"%s write error (DMA or IRQ trouble?)\n",
-				is_playback ? "playback" : "capture");
+				"%s timeout (DMA or IRQ trouble?)\n",
+				is_playback ? "playback write" : "capture read");
 			err = -EIO;
 			break;
 		}
@@ -2099,14 +2084,14 @@ static int pcm_sanity_check(struct snd_pcm_substream *substream)
 	runtime = substream->runtime;
 	if (snd_BUG_ON(!substream->ops->copy_user && !runtime->dma_area))
 		return -EINVAL;
-	if (runtime->status->state == SNDRV_PCM_STATE_OPEN)
+	if (runtime->state == SNDRV_PCM_STATE_OPEN)
 		return -EBADFD;
 	return 0;
 }
 
 static int pcm_accessible_state(struct snd_pcm_runtime *runtime)
 {
-	switch (runtime->status->state) {
+	switch (runtime->state) {
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_RUNNING:
 	case SNDRV_PCM_STATE_PAUSED:
@@ -2155,6 +2140,8 @@ int pcm_lib_apply_appl_ptr(struct snd_pcm_substream *substream,
 		ret = substream->ops->ack(substream);
 		if (ret < 0) {
 			runtime->control->appl_ptr = old_appl_ptr;
+			if (ret == -EPIPE)
+				__snd_pcm_xrun(substream);
 			return ret;
 		}
 	}
@@ -2225,7 +2212,7 @@ snd_pcm_sframes_t __snd_pcm_lib_xfer(struct snd_pcm_substream *substream,
 		goto _end_unlock;
 
 	runtime->twake = runtime->control->avail_min ? : 1;
-	if (runtime->status->state == SNDRV_PCM_STATE_RUNNING)
+	if (runtime->state == SNDRV_PCM_STATE_RUNNING)
 		snd_pcm_update_hw_ptr(substream);
 
 	/*
@@ -2233,7 +2220,7 @@ snd_pcm_sframes_t __snd_pcm_lib_xfer(struct snd_pcm_substream *substream,
 	 * thread may start capture
 	 */
 	if (!is_playback &&
-	    runtime->status->state == SNDRV_PCM_STATE_PREPARED &&
+	    runtime->state == SNDRV_PCM_STATE_PREPARED &&
 	    size >= runtime->start_threshold) {
 		err = snd_pcm_start(substream);
 		if (err < 0)
@@ -2247,7 +2234,7 @@ snd_pcm_sframes_t __snd_pcm_lib_xfer(struct snd_pcm_substream *substream,
 		snd_pcm_uframes_t cont;
 		if (!avail) {
 			if (!is_playback &&
-			    runtime->status->state == SNDRV_PCM_STATE_DRAINING) {
+			    runtime->state == SNDRV_PCM_STATE_DRAINING) {
 				snd_pcm_stop(substream, SNDRV_PCM_STATE_SETUP);
 				goto _end_unlock;
 			}
@@ -2303,7 +2290,7 @@ snd_pcm_sframes_t __snd_pcm_lib_xfer(struct snd_pcm_substream *substream,
 		xfer += frames;
 		avail -= frames;
 		if (is_playback &&
-		    runtime->status->state == SNDRV_PCM_STATE_PREPARED &&
+		    runtime->state == SNDRV_PCM_STATE_PREPARED &&
 		    snd_pcm_playback_hw_avail(runtime) >= (snd_pcm_sframes_t)runtime->start_threshold) {
 			err = snd_pcm_start(substream);
 			if (err < 0)

@@ -5,12 +5,16 @@
  * User space memory access functions
  */
 #include <linux/compiler.h>
+#include <linux/instrumented.h>
 #include <linux/kasan-checks.h>
+#include <linux/mm_types.h>
 #include <linux/string.h>
+#include <linux/mmap_lock.h>
 #include <asm/asm.h>
 #include <asm/page.h>
 #include <asm/smap.h>
 #include <asm/extable.h>
+#include <asm/tlbflush.h>
 
 #ifdef CONFIG_DEBUG_ATOMIC_SLEEP
 static inline bool pagefault_disabled(void);
@@ -18,6 +22,57 @@ static inline bool pagefault_disabled(void);
 	WARN_ON_ONCE(!in_task() && !pagefault_disabled())
 #else
 # define WARN_ON_IN_IRQ()
+#endif
+
+#ifdef CONFIG_ADDRESS_MASKING
+/*
+ * Mask out tag bits from the address.
+ *
+ * Magic with the 'sign' allows to untag userspace pointer without any branches
+ * while leaving kernel addresses intact.
+ */
+static inline unsigned long __untagged_addr(unsigned long addr)
+{
+	long sign;
+
+	/*
+	 * Refer tlbstate_untag_mask directly to avoid RIP-relative relocation
+	 * in alternative instructions. The relocation gets wrong when gets
+	 * copied to the target place.
+	 */
+	asm (ALTERNATIVE("",
+			 "sar $63, %[sign]\n\t" /* user_ptr ? 0 : -1UL */
+			 "or %%gs:tlbstate_untag_mask, %[sign]\n\t"
+			 "and %[sign], %[addr]\n\t", X86_FEATURE_LAM)
+	     : [addr] "+r" (addr), [sign] "=r" (sign)
+	     : "m" (tlbstate_untag_mask), "[sign]" (addr));
+
+	return addr;
+}
+
+#define untagged_addr(addr)	({					\
+	unsigned long __addr = (__force unsigned long)(addr);		\
+	(__force __typeof__(addr))__untagged_addr(__addr);		\
+})
+
+static inline unsigned long __untagged_addr_remote(struct mm_struct *mm,
+						   unsigned long addr)
+{
+	long sign = addr >> 63;
+
+	mmap_assert_locked(mm);
+	addr &= (mm)->context.untag_mask | sign;
+
+	return addr;
+}
+
+#define untagged_addr_remote(mm, addr)	({				\
+	unsigned long __addr = (__force unsigned long)(addr);		\
+	(__force __typeof__(addr))__untagged_addr_remote(mm, __addr);	\
+})
+
+#else
+#define untagged_addr(addr)	(addr)
 #endif
 
 /**
@@ -37,10 +92,10 @@ static inline bool pagefault_disabled(void);
  * Return: true (nonzero) if the memory block may be valid, false (zero)
  * if it is definitely invalid.
  */
-#define access_ok(addr, size)					\
+#define access_ok(addr, size)						\
 ({									\
 	WARN_ON_IN_IRQ();						\
-	likely(__access_ok(addr, size));				\
+	likely(__access_ok(untagged_addr(addr), size));			\
 })
 
 #include <asm-generic/access_ok.h>
@@ -103,6 +158,7 @@ extern int __get_user_bad(void);
 		     : "=a" (__ret_gu), "=r" (__val_gu),		\
 			ASM_CALL_CONSTRAINT				\
 		     : "0" (ptr), "i" (sizeof(*(ptr))));		\
+	instrument_get_user(__val_gu);					\
 	(x) = (__force __typeof__(*(ptr))) __val_gu;			\
 	__builtin_expect(__ret_gu, 0);					\
 })
@@ -192,9 +248,11 @@ extern void __put_user_nocheck_8(void);
 	int __ret_pu;							\
 	void __user *__ptr_pu;						\
 	register __typeof__(*(ptr)) __val_pu asm("%"_ASM_AX);		\
-	__chk_user_ptr(ptr);						\
-	__ptr_pu = (ptr);						\
-	__val_pu = (x);							\
+	__typeof__(*(ptr)) __x = (x); /* eval x once */			\
+	__typeof__(ptr) __ptr = (ptr); /* eval ptr once */		\
+	__chk_user_ptr(__ptr);						\
+	__ptr_pu = __ptr;						\
+	__val_pu = __x;							\
 	asm volatile("call __" #fn "_%P[size]"				\
 		     : "=c" (__ret_pu),					\
 			ASM_CALL_CONSTRAINT				\
@@ -202,6 +260,7 @@ extern void __put_user_nocheck_8(void);
 		       "r" (__val_pu),					\
 		       [size] "i" (sizeof(*(ptr)))			\
 		     :"ebx");						\
+	instrument_put_user(__x, __ptr, sizeof(*(ptr)));		\
 	__builtin_expect(__ret_pu, 0);					\
 })
 
@@ -248,23 +307,26 @@ extern void __put_user_nocheck_8(void);
 
 #define __put_user_size(x, ptr, size, label)				\
 do {									\
-	__chk_user_ptr(ptr);						\
+	__typeof__(*(ptr)) __x = (x); /* eval x once */			\
+	__typeof__(ptr) __ptr = (ptr); /* eval ptr once */		\
+	__chk_user_ptr(__ptr);						\
 	switch (size) {							\
 	case 1:								\
-		__put_user_goto(x, ptr, "b", "iq", label);		\
+		__put_user_goto(__x, __ptr, "b", "iq", label);		\
 		break;							\
 	case 2:								\
-		__put_user_goto(x, ptr, "w", "ir", label);		\
+		__put_user_goto(__x, __ptr, "w", "ir", label);		\
 		break;							\
 	case 4:								\
-		__put_user_goto(x, ptr, "l", "ir", label);		\
+		__put_user_goto(__x, __ptr, "l", "ir", label);		\
 		break;							\
 	case 8:								\
-		__put_user_goto_u64(x, ptr, label);			\
+		__put_user_goto_u64(__x, __ptr, label);			\
 		break;							\
 	default:							\
 		__put_user_bad();					\
 	}								\
+	instrument_put_user(__x, __ptr, size);				\
 } while (0)
 
 #ifdef CONFIG_CC_HAS_ASM_GOTO_OUTPUT
@@ -305,6 +367,7 @@ do {									\
 	default:							\
 		(x) = __get_user_bad();					\
 	}								\
+	instrument_get_user(x);						\
 } while (0)
 
 #define __get_user_asm(x, addr, itype, ltype, label)			\
@@ -448,7 +511,7 @@ do {									\
 
 #ifdef CONFIG_X86_32
 /*
- * Unlike the normal CMPXCHG, hardcode ECX for both success/fail and error.
+ * Unlike the normal CMPXCHG, use output GPR for both success/fail and error.
  * There are only six GPRs available and four (EAX, EBX, ECX, and EDX) are
  * hardcoded by CMPXCHG8B, leaving only ESI and EDI.  If the compiler uses
  * both ESI and EDI for the memory operand, compilation will fail if the error
@@ -461,11 +524,12 @@ do {									\
 	__typeof__(*(_ptr)) __new = (_new);				\
 	asm volatile("\n"						\
 		     "1: " LOCK_PREFIX "cmpxchg8b %[ptr]\n"		\
-		     "mov $0, %%ecx\n\t"				\
-		     "setz %%cl\n"					\
+		     "mov $0, %[result]\n\t"				\
+		     "setz %b[result]\n"				\
 		     "2:\n"						\
-		     _ASM_EXTABLE_TYPE_REG(1b, 2b, EX_TYPE_EFAULT_REG, %%ecx) \
-		     : [result]"=c" (__result),				\
+		     _ASM_EXTABLE_TYPE_REG(1b, 2b, EX_TYPE_EFAULT_REG,	\
+					   %[result])			\
+		     : [result] "=q" (__result),			\
 		       "+A" (__old),					\
 		       [ptr] "+m" (*_ptr)				\
 		     : "b" ((u32)__new),				\
@@ -502,9 +566,6 @@ strncpy_from_user(char *dst, const char __user *src, long count);
 
 extern __must_check long strnlen_user(const char __user *str, long n);
 
-unsigned long __must_check clear_user(void __user *mem, unsigned long len);
-unsigned long __must_check __clear_user(void __user *mem, unsigned long len);
-
 #ifdef CONFIG_ARCH_HAS_COPY_MC
 unsigned long __must_check
 copy_mc_to_kernel(void *to, const void *from, unsigned len);
@@ -526,6 +587,8 @@ extern struct movsl_mask {
 #define ARCH_HAS_NOCACHE_UACCESS 1
 
 #ifdef CONFIG_X86_32
+unsigned long __must_check clear_user(void __user *mem, unsigned long len);
+unsigned long __must_check __clear_user(void __user *mem, unsigned long len);
 # include <asm/uaccess_32.h>
 #else
 # include <asm/uaccess_64.h>

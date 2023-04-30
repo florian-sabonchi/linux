@@ -4,7 +4,6 @@
  * Copyright (c) 2019-2020 Marvell International Ltd.
  */
 
-#include <linux/version.h>
 #include <linux/types.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -624,7 +623,7 @@ static void qede_get_drvinfo(struct net_device *ndev,
 	struct qede_dev *edev = netdev_priv(ndev);
 	char mbi[ETHTOOL_FWVERS_LEN];
 
-	strlcpy(info->driver, "qede", sizeof(info->driver));
+	strscpy(info->driver, "qede", sizeof(info->driver));
 
 	snprintf(storm, ETHTOOL_FWVERS_LEN, "%d.%d.%d.%d",
 		 edev->dev_info.common.fw_major,
@@ -661,7 +660,7 @@ static void qede_get_drvinfo(struct net_device *ndev,
 			 "mfw %s", mfw);
 	}
 
-	strlcpy(info->bus_info, pci_name(edev->pdev), sizeof(info->bus_info));
+	strscpy(info->bus_info, pci_name(edev->pdev), sizeof(info->bus_info));
 }
 
 static void qede_get_wol(struct net_device *ndev, struct ethtool_wolinfo *wol)

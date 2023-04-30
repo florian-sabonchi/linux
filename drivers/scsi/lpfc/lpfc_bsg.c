@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2017-2022 Broadcom. All Rights Reserved. The term *
+ * Copyright (C) 2017-2023 Broadcom. All Rights Reserved. The term *
  * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.     *
  * Copyright (C) 2009-2015 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
@@ -134,8 +134,8 @@ lpfc_free_bsg_buffers(struct lpfc_hba *phba, struct lpfc_dmabuf *mlist)
 	if (mlist) {
 		list_for_each_entry_safe(mlast, next_mlast, &mlist->list,
 					 list) {
-			lpfc_mbuf_free(phba, mlast->virt, mlast->phys);
 			list_del(&mlast->list);
+			lpfc_mbuf_free(phba, mlast->virt, mlast->phys);
 			kfree(mlast);
 		}
 		lpfc_mbuf_free(phba, mlist->virt, mlist->phys);
@@ -1977,8 +1977,6 @@ lpfc_sli4_bsg_set_loopback_mode(struct lpfc_hba *phba, int mode,
 static int
 lpfc_sli4_diag_fcport_reg_setup(struct lpfc_hba *phba)
 {
-	int rc;
-
 	if (phba->pport->fc_flag & FC_VFI_REGISTERED) {
 		lpfc_printf_log(phba, KERN_WARNING, LOG_LIBDFC,
 				"3136 Port still had vfi registered: "
@@ -1988,8 +1986,7 @@ lpfc_sli4_diag_fcport_reg_setup(struct lpfc_hba *phba)
 				phba->vpi_ids[phba->pport->vpi]);
 		return -EINVAL;
 	}
-	rc = lpfc_issue_reg_vfi(phba->pport);
-	return rc;
+	return lpfc_issue_reg_vfi(phba->pport);
 }
 
 /**
@@ -2585,7 +2582,7 @@ static int lpfcdiag_loop_self_unreg(struct lpfc_hba *phba, uint16_t rpi)
  *
  * This function obtains the transmit and receive ids required to send
  * an unsolicited ct command with a payload. A special lpfc FsType and CmdRsp
- * flags are used to the unsolicted response handler is able to process
+ * flags are used to the unsolicited response handler is able to process
  * the ct command sent on the same port.
  **/
 static int lpfcdiag_loop_get_xri(struct lpfc_hba *phba, uint16_t rpi,
@@ -2877,7 +2874,7 @@ out:
  * @len: Number of data bytes
  *
  * This function allocates and posts a data buffer of sufficient size to receive
- * an unsolicted CT command.
+ * an unsolicited CT command.
  **/
 static int lpfcdiag_sli3_loop_post_rxbufs(struct lpfc_hba *phba, uint16_t rxxri,
 					  size_t len)

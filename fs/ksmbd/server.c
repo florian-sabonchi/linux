@@ -235,10 +235,8 @@ send:
 	if (work->sess && work->sess->enc && work->encrypted &&
 	    conn->ops->encrypt_resp) {
 		rc = conn->ops->encrypt_resp(work);
-		if (rc < 0) {
+		if (rc < 0)
 			conn->ops->set_rsp_status(work, STATUS_DATA_ERROR);
-			goto send;
-		}
 	}
 
 	ksmbd_conn_write(work);
@@ -291,10 +289,7 @@ static int queue_ksmbd_work(struct ksmbd_conn *conn)
 	work->request_buf = conn->request_buf;
 	conn->request_buf = NULL;
 
-	if (ksmbd_init_smb_server(work)) {
-		ksmbd_free_work_struct(work);
-		return -EINVAL;
-	}
+	ksmbd_init_smb_server(work);
 
 	ksmbd_conn_enqueue_request(work);
 	atomic_inc(&conn->r_count);
@@ -420,7 +415,7 @@ int server_queue_ctrl_reset_work(void)
 	return __queue_ctrl_work(SERVER_CTRL_TYPE_RESET);
 }
 
-static ssize_t stats_show(struct class *class, struct class_attribute *attr,
+static ssize_t stats_show(const struct class *class, const struct class_attribute *attr,
 			  char *buf)
 {
 	/*
@@ -434,15 +429,13 @@ static ssize_t stats_show(struct class *class, struct class_attribute *attr,
 		"reset",
 		"shutdown"
 	};
-
-	ssize_t sz = scnprintf(buf, PAGE_SIZE, "%d %s %d %lu\n", stats_version,
-			       state[server_conf.state], server_conf.tcp_port,
-			       server_conf.ipc_last_active / HZ);
-	return sz;
+	return sysfs_emit(buf, "%d %s %d %lu\n", stats_version,
+			  state[server_conf.state], server_conf.tcp_port,
+			  server_conf.ipc_last_active / HZ);
 }
 
-static ssize_t kill_server_store(struct class *class,
-				 struct class_attribute *attr, const char *buf,
+static ssize_t kill_server_store(const struct class *class,
+				 const struct class_attribute *attr, const char *buf,
 				 size_t len)
 {
 	if (!sysfs_streq(buf, "hard"))
@@ -462,7 +455,7 @@ static const char * const debug_type_strings[] = {"smb", "auth", "vfs",
 						  "oplock", "ipc", "conn",
 						  "rdma"};
 
-static ssize_t debug_show(struct class *class, struct class_attribute *attr,
+static ssize_t debug_show(const struct class *class, const struct class_attribute *attr,
 			  char *buf)
 {
 	ssize_t sz = 0;
@@ -470,23 +463,17 @@ static ssize_t debug_show(struct class *class, struct class_attribute *attr,
 
 	for (i = 0; i < ARRAY_SIZE(debug_type_strings); i++) {
 		if ((ksmbd_debug_types >> i) & 1) {
-			pos = scnprintf(buf + sz,
-					PAGE_SIZE - sz,
-					"[%s] ",
-					debug_type_strings[i]);
+			pos = sysfs_emit_at(buf, sz, "[%s] ", debug_type_strings[i]);
 		} else {
-			pos = scnprintf(buf + sz,
-					PAGE_SIZE - sz,
-					"%s ",
-					debug_type_strings[i]);
+			pos = sysfs_emit_at(buf, sz, "%s ", debug_type_strings[i]);
 		}
 		sz += pos;
 	}
-	sz += scnprintf(buf + sz, PAGE_SIZE - sz, "\n");
+	sz += sysfs_emit_at(buf, sz, "\n");
 	return sz;
 }
 
-static ssize_t debug_store(struct class *class, struct class_attribute *attr,
+static ssize_t debug_store(const struct class *class, const struct class_attribute *attr,
 			   const char *buf, size_t len)
 {
 	int i;
@@ -526,7 +513,6 @@ ATTRIBUTE_GROUPS(ksmbd_control_class);
 
 static struct class ksmbd_control_class = {
 	.name		= "ksmbd-control",
-	.owner		= THIS_MODULE,
 	.class_groups	= ksmbd_control_class_groups,
 };
 

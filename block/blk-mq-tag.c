@@ -9,12 +9,10 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 
-#include <linux/blk-mq.h>
 #include <linux/delay.h>
 #include "blk.h"
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
-#include "blk-mq-tag.h"
 
 /*
  * Recalculate wakeup batch when tag is shared by hctx.
@@ -196,7 +194,7 @@ unsigned int blk_mq_get_tag(struct blk_mq_alloc_data *data)
 		 * other allocations on previous queue won't be starved.
 		 */
 		if (bt != bt_prev)
-			sbitmap_queue_wake_up(bt_prev);
+			sbitmap_queue_wake_up(bt_prev, 1);
 
 		ws = bt_wait_ptr(bt, data->hctx);
 	} while (1);
