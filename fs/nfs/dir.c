@@ -317,7 +317,7 @@ static int nfs_readdir_folio_array_append(struct folio *folio,
 
 	name = nfs_readdir_copy_name(entry->name, entry->len);
 
-	array = kmap_atomic(folio_page(folio, 0));
+	array = kmap_local_folio(folio, 0);
 	if (!name)
 		goto out;
 	ret = nfs_readdir_array_can_expand(array);
@@ -340,7 +340,7 @@ static int nfs_readdir_folio_array_append(struct folio *folio,
 		nfs_readdir_array_set_eof(array);
 out:
 	*cookie = array->last_cookie;
-	kunmap_atomic(array);
+	kunmap_local(array);
 	return ret;
 }
 
@@ -402,7 +402,7 @@ static struct folio *nfs_readdir_folio_get_locked(struct address_space *mapping,
 	struct folio *folio;
 
 	folio = filemap_grab_folio(mapping, index);
-	if (!folio)
+	if (IS_ERR(folio))
 		return NULL;
 	nfs_readdir_folio_init_and_validate(folio, cookie, change_attr);
 	return folio;
@@ -448,7 +448,7 @@ static struct folio *nfs_readdir_folio_get_next(struct address_space *mapping,
 	folio = __filemap_get_folio(mapping, index,
 			FGP_LOCK|FGP_CREAT|FGP_NOFS|FGP_NOWAIT,
 			mapping_gfp_mask(mapping));
-	if (!folio)
+	if (IS_ERR(folio))
 		return NULL;
 	nfs_readdir_folio_init_and_validate(folio, cookie, change_attr);
 	if (nfs_readdir_folio_last_cookie(folio) != cookie)
