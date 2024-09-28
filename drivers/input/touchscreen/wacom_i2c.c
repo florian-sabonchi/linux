@@ -253,8 +253,8 @@ static int wacom_i2c_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(wacom_i2c_pm, wacom_i2c_suspend, wacom_i2c_resume);
 
 static const struct i2c_device_id wacom_i2c_id[] = {
-	{ "WAC_I2C_EMR", 0 },
-	{ },
+	{ "WAC_I2C_EMR" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wacom_i2c_id);
 
@@ -264,7 +264,7 @@ static struct i2c_driver wacom_i2c_driver = {
 		.pm	= pm_sleep_ptr(&wacom_i2c_pm),
 	},
 
-	.probe_new	= wacom_i2c_probe,
+	.probe		= wacom_i2c_probe,
 	.id_table	= wacom_i2c_id,
 };
 module_i2c_driver(wacom_i2c_driver);

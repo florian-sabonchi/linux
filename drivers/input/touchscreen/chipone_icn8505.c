@@ -68,7 +68,6 @@ struct icn8505_touch_data {
 struct icn8505_data {
 	struct i2c_client *client;
 	struct input_dev *input;
-	struct gpio_desc *wake_gpio;
 	struct touchscreen_properties prop;
 	char firmware_name[32];
 };
@@ -498,7 +497,7 @@ static struct i2c_driver icn8505_driver = {
 		.pm	= pm_sleep_ptr(&icn8505_pm_ops),
 		.acpi_match_table = icn8505_acpi_match,
 	},
-	.probe_new = icn8505_probe,
+	.probe = icn8505_probe,
 };
 
 module_i2c_driver(icn8505_driver);
